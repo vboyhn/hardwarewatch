@@ -1,0 +1,6 @@
+{
+  "name": "hardwarewatch",
+  "version": "1.0.0",
+  "main": "hardwarewatch.js",
+  "dependencies": {}
+}

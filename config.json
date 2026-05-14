@@ -1,0 +1,7 @@
+{
+  "name": "Hardware Watch",
+  "shortName": "hardwarewatch",
+  "version": "1.0.0",
+  "description": "Hardware change detection plugin",
+  "hasAdminPanel": true
+}
