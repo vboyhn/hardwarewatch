@@ -1,7 +1,9 @@
 {
-  "name": "Hardware Watch",
-  "shortName": "hardwarewatch",
-  "version": "1.0.0",
-  "description": "Hardware change detection plugin",
-  "hasAdminPanel": true
+    "name": "hardwarewatch",
+    "shortName": "Hardware Watch",
+    "version": "1.0.0",
+    "description": "Detect hardware changes",
+    "homepage": "https://meshcentral.com",
+    "author": "Admin",
+    "hasAdminPanel": true
 }
