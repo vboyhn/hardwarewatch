@@ -1,0 +1,2 @@
+# hardwarewatch
+hardwarewatch for meshcentral
