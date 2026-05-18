@@ -1,7 +1,7 @@
 {
   "name": "Hardware Watch",
   "shortName": "hardwarewatch",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "author": "vboyhn",
   "description": "Dashboard tong hop thong tin phan cung may tinh",
   "hasAdminPanel": true,
