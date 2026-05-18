@@ -1,9 +1,10 @@
 {
-    "name": "hardwarewatch",
-    "shortName": "Hardware Watch",
+    "name": "Hardware Reporter",
+    "shortName": "HardwareReporter",
     "version": "1.0.0",
-    "description": "Detect hardware changes",
-    "homepage": "https://meshcentral.com",
-    "author": "Admin",
-    "hasAdminPanel": true
+    "description": "Tổng hợp và báo cáo thông tin phần cứng máy tính",
+    "author": "Tên Của Bạn",
+    "homepage": "https://github.com/username/repo",
+    "meshCentralCompat": ">=1.0.0",
+    "hasAdminPanel": false
 }
