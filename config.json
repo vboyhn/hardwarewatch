@@ -1,10 +1,9 @@
 {
-    "name": "Hardware Reporter",
-    "shortName": "HardwareReporter",
-    "version": "1.0.0",
-    "description": "Tổng hợp và báo cáo thông tin phần cứng máy tính",
-    "author": "Tên Của Bạn",
-    "homepage": "https://github.com/vboyhn/hardwarewatch",
-    "meshCentralCompat": ">=1.0.0",
-    "hasAdminPanel": false
+  "name": "Hardware Watch",
+  "shortName": "hardwarewatch",
+  "version": "1.0.0",
+  "author": "vboyhn",
+  "description": "Dashboard tổng hợp thông tin phần cứng máy tính trên MeshCentral",
+  "hasAdminPanel": true,
+  "homepage": "https://github.com/vboyhn/hardwarewatch"
 }
