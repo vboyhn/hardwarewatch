@@ -3,7 +3,15 @@
   "shortName": "hardwarewatch",
   "version": "1.0.0",
   "author": "vboyhn",
-  "description": "Dashboard tổng hợp thông tin phần cứng máy tính trên MeshCentral",
+  "description": "Dashboard tổng hợp thông tin phần cứng máy tính",
   "hasAdminPanel": true,
-  "homepage": "https://github.com/vboyhn/hardwarewatch"
+  "homepage": "https://github.com/vboyhn/hardwarewatch",
+  "configUrl": "https://raw.githubusercontent.com/vboyhn/hardwarewatch/main/config.json",
+  "downloadUrl": "https://github.com/vboyhn/hardwarewatch/archive/refs/heads/main.zip",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/vboyhn/hardwarewatch.git"
+  },
+  "versionHistoryUrl": "https://api.github.com/repos/vboyhn/hardwarewatch/tags",
+  "meshCentralCompat": ">=1.0.0"
 }
