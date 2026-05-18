@@ -1,184 +1,1557 @@
+const fs = require('fs');
+const path = require('path');
+const crypto = require('crypto');
+
 module.exports.hardwarewatch = function (parent) {
+
     var obj = {};
+
     obj.parent = parent;
     obj.meshServer = parent.parent;
 
-    obj.server_startup = function() {
-        console.log('>>> [MeshCentral Plugin] HardwareWatch loaded! <<<');
-    };
+   
 
-    obj.handleAdminReq = function(req, res, user) {
-        if (req.query && req.query.action === 'getdata') {
-            obj.meshServer.db.GetAllType('node', function (err, docs) {
-                if (err || !docs) {
-                    res.json({ success: false, error: 'Lỗi truy xuất Database' });
-                    return;
-                }
-                
-                var hardwareList = docs.map(function(node) {
-                    // Helper: Loại bỏ các giá trị null, undefined hoặc chuỗi "null"
-                    function getVal(v) {
-                        return (v === null || v === undefined || v === '' || v === 'null') ? false : v;
-                    }
+    // =====================================================
+    // FILES
+    // =====================================================
 
-                    // 1. Logic lấy IP (Lùng sục mọi trường có thể chứa IP trong DB)
-                    var ipAddress = getVal(node.ip) || getVal(node.host) || getVal(node.pname) || getVal(node.lastpname) || 'N/A';
+    const BASELINE_FILE = path.join(
+        __dirname,
+        'hardware-baseline.json'
+    );
 
-                    // 2. Logic trích xuất phần cứng (Quét sâu)
-                    var hwRam = "N/A";
-                    var hwCpu = "N/A";
-                    
-                    // Lấy object chứa dữ liệu (Bản mới dùng sysinfo, bản cũ dùng hardware)
-                    var sys = node.sysinfo || node.hardware || {};
-                    var hw = sys.hardware || sys; 
-                    
-                    if (hw) {
-                        // Xác định xem thiết bị đang chạy OS gì để vào đúng thư mục
-                        var osList = ['windows', 'linux', 'mac', 'freebsd'];
-                        var osData = null;
-                        for(var i = 0; i < osList.length; i++) {
-                            if (hw[osList[i]]) {
-                                osData = hw[osList[i]];
-                                break;
-                            }
-                        }
-                        
-                        // Fallback nếu MeshCentral không chia theo nhánh OS
-                        if (!osData && (hw.cpu || hw.memory || hw.ram)) {
-                            osData = hw;
-                        }
+    const HISTORY_FILE = path.join(
+        __dirname,
+        'hardware-history.json'
+    );
 
-                        if (osData) {
-                            // Bóc tách RAM
-                            if (osData.memory && Array.isArray(osData.memory)) {
-                                var totalRam = 0;
-                                osData.memory.forEach(function(m) {
-                                    // Bắt cả chữ hoa lẫn thường (Windows vs Linux)
-                                    var cap = m.Capacity || m.capacity || m.Size || m.size || 0;
-                                    totalRam += parseInt(cap);
-                                });
-                                if (totalRam > 0) {
-                                    hwRam = (totalRam / (1024 * 1024 * 1024)).toFixed(1) + " GB";
-                                }
-                            } else if (osData.ram) {
-                                hwRam = osData.ram;
-                            }
-                            
-                            // Bóc tách CPU
-                            if (osData.cpu && Array.isArray(osData.cpu) && osData.cpu.length > 0) {
-                                var c = osData.cpu[0];
-                                hwCpu = c.Name || c.name || c.Caption || c.caption || c.Version || c.brand || "Unknown CPU";
-                            } else if (typeof osData.cpu === 'string') {
-                                hwCpu = osData.cpu;
-                            }
-                        }
-                    }
+    // =====================================================
+    // DATABASE
+    // =====================================================
+
+    let baselineDb = {};
+    let historyDb = [];
+    let alertQueue = [];
+
+    // =====================================================
+    // LOAD BASELINE
+    // =====================================================
+
+    try {
+
+        if (fs.existsSync(BASELINE_FILE)) {
+
+            baselineDb = JSON.parse(
+                fs.readFileSync(BASELINE_FILE)
+            );
+
+        }
+
+    }
+    catch (e) {
+
+        console.log(
+            'Cannot load baseline file',
+            e
+        );
+
+    }
+
+    // =====================================================
+    // LOAD HISTORY
+    // =====================================================
+
+    try {
+
+        if (fs.existsSync(HISTORY_FILE)) {
+
+            historyDb = JSON.parse(
+                fs.readFileSync(HISTORY_FILE)
+            );
+
+        }
+
+    }
+    catch (e) {
+
+        console.log(
+            'Cannot load history file',
+            e
+        );
+
+    }
+
+    // =====================================================
+    // SAVE BASELINE
+    // =====================================================
+
+    function saveBaseline() {
+
+        try {
+
+            fs.writeFileSync(
+                BASELINE_FILE,
+                JSON.stringify(
+                    baselineDb,
+                    null,
+                    4
+                )
+            );
+
+        }
+        catch (e) {
+
+            console.log(
+                'Cannot save baseline',
+                e
+            );
+
+        }
+
+    }
+
+    // =====================================================
+    // SAVE HISTORY
+    // =====================================================
+
+    function saveHistory() {
+
+        try {
+
+            fs.writeFileSync(
+                HISTORY_FILE,
+                JSON.stringify(
+                    historyDb,
+                    null,
+                    4
+                )
+            );
+
+        }
+        catch (e) {
+
+            console.log(
+                'Cannot save history',
+                e
+            );
+
+        }
+
+    }
+
+    // =====================================================
+    // CLEAN SERIAL
+    // =====================================================
+
+    function cleanSerial(v) {
+
+        if (!v) return '';
+
+        v = v.toString().trim();
+
+        const invalid = [
+            '',
+            '00000000',
+            'To Be Filled By O.E.M.',
+            'Default string',
+            'System Serial Number'
+        ];
+
+        if (invalid.includes(v)) {
+            return '';
+        }
+
+        return v;
+    }
+
+    // =====================================================
+    // HASH HARDWARE
+    // =====================================================
+
+    function hashHardware(hw) {
+
+        return crypto
+            .createHash('sha256')
+            .update(JSON.stringify(hw))
+            .digest('hex');
+
+    }
+
+    // =====================================================
+    // EXTRACT HARDWARE
+    // =====================================================
+
+    function extractHardware(siData) {
+
+        var result = {
+            cpu: '',
+            ram: [],
+            disk: []
+        };
+
+        if (!siData || !siData.hardware) {
+            return result;
+        }
+
+        var hw = siData.hardware;
+
+        var osData =
+            hw.windows ||
+            hw.linux ||
+            hw.mac ||
+            hw.freebsd ||
+            null;
+
+        if (!osData) {
+            return result;
+        }
+
+        // CPU
+        if (
+            osData.cpu &&
+            Array.isArray(osData.cpu) &&
+            osData.cpu[0]
+        ) {
+
+            result.cpu =
+                osData.cpu[0].Name ||
+                osData.cpu[0].Model ||
+                '';
+
+        }
+
+        // RAM
+        if (
+            osData.memory &&
+            Array.isArray(osData.memory)
+        ) {
+
+            result.ram =
+                osData.memory.map(function (m) {
 
                     return {
-                        name: node.name || 'Unknown',
-                        os: getVal(node.osdesc) || getVal(node.os) || 'N/A',
-                        ip: ipAddress,
-                        cpu: hwCpu,
-                        ram: hwRam,
-                        lastSeen: node.lastconn ? new Date(node.lastconn).toLocaleString() : 'N/A'
+
+                        serial: cleanSerial(
+                            m.SerialNumber || ''
+                        ),
+
+                        size: parseInt(
+                            m.Capacity || 0
+                        )
+
                     };
+
                 });
-                
-                // TRẢ VỀ API: Gửi kèm 2 thiết bị gốc đầu tiên để Debug
-                res.json({ success: true, data: hardwareList, debugDocs: docs.slice(0, 2) });
-            });
+
+        }
+
+        // DISK
+        if (
+            osData.drives &&
+            Array.isArray(osData.drives)
+        ) {
+
+            result.disk =
+                osData.drives.map(function (d) {
+
+                    return {
+
+                        model: d.Model || '',
+
+                        serial: cleanSerial(
+                            d.SerialNumber || ''
+                        ),
+
+                        size: parseInt(
+                            d.Size || 0
+                        )
+
+                    };
+
+                });
+
+        }
+
+        return result;
+    }
+
+    // =====================================================
+    // COMPARE HARDWARE
+    // =====================================================
+
+    function compareHardware(oldHw, newHw) {
+
+        var changes = [];
+
+        if (
+            oldHw.cpu !== newHw.cpu
+        ) {
+
+            changes.push(
+                'CPU changed'
+            );
+
+        }
+
+        if (
+            JSON.stringify(oldHw.ram) !==
+            JSON.stringify(newHw.ram)
+        ) {
+
+            changes.push(
+                'RAM changed'
+            );
+
+        }
+
+        if (
+            JSON.stringify(oldHw.disk) !==
+            JSON.stringify(newHw.disk)
+        ) {
+
+            changes.push(
+                'Disk changed'
+            );
+
+        }
+
+        return changes;
+    }
+
+    // =====================================================
+    // CHECK HARDWARE
+    // =====================================================
+
+    function checkHardware(node, siData) {
+
+        try {
+
+            var hw =
+                extractHardware(siData);
+
+            var fingerprint =
+                hashHardware(hw);
+
+            var nodeid =
+                node._id;
+
+            // AUTO CREATE BASELINE
+
+            if (
+                !baselineDb[nodeid]
+            ) {
+
+                baselineDb[nodeid] = {
+
+                    fingerprint:
+                        fingerprint,
+
+                    hardware:
+                        hw,
+
+                    updated:
+                        new Date()
+
+                };
+
+                saveBaseline();
+
+                console.log(
+                    'AUTO BASELINE CREATED:',
+                    node.name
+                );
+
+                return;
+            }
+
+            // NO CHANGE
+
+            if (
+                baselineDb[nodeid]
+                    .fingerprint ===
+                fingerprint
+            ) {
+
+                return;
+
+            }
+
+            // COMPARE
+
+            var changes =
+                compareHardware(
+                    baselineDb[nodeid]
+                        .hardware,
+                    hw
+                );
+
+            if (
+                changes.length > 0
+            ) {
+
+                console.log(
+                    'HARDWARE CHANGE:',
+                    node.name,
+                    changes
+                );
+
+                // ALERT
+
+                alertQueue.push({
+
+                    id: Date.now(),
+
+                    node: node.name,
+
+                    changes: changes,
+
+                    time: new Date()
+
+                });
+
+                // HISTORY
+
+                historyDb.push({
+
+                    id: Date.now(),
+
+                    nodeid: node._id,
+
+                    machine: node.name,
+
+                    changes: changes,
+
+                    oldHardware:
+                        baselineDb[nodeid]
+                            .hardware,
+
+                    newHardware:
+                        hw,
+
+                    time:
+                        new Date()
+
+                });
+
+                // LIMIT HISTORY
+
+                if (
+                    historyDb.length > 1000
+                ) {
+
+                    historyDb.shift();
+
+                }
+
+                saveHistory();
+
+            }
+
+        }
+        catch (ex) {
+
+            console.log(
+                'Hardware Check Error:',
+                ex
+            );
+
+        }
+
+    }
+
+    // =====================================================
+    // SERVER STARTUP
+    // =====================================================
+
+    obj.server_startup = function () {
+
+        console.log(
+            'HardwareWatch Started'
+        );
+
+        obj.parent.AddEventDispatch(
+            ['*'],
+            function (source, event) {
+
+                try {
+
+                    if (
+                        event.action ===
+                            'nodeconnect' ||
+                        event.action ===
+                            'changenode'
+                    ) {
+
+                        var nodeid =
+                            event.nodeid;
+
+                        if (!nodeid) {
+                            return;
+                        }
+
+                        obj.meshServer.db.Get(
+                            nodeid,
+                            function (
+                                err,
+                                nodes
+                            ) {
+
+                                if (
+                                    err ||
+                                    !nodes ||
+                                    nodes.length === 0
+                                ) {
+                                    return;
+                                }
+
+                                var node =
+                                    nodes[0];
+
+                                obj.meshServer.db.GetAllType(
+                                    'sysinfo',
+                                    function (
+                                        err,
+                                        sysinfos
+                                    ) {
+
+                                        if (
+                                            !sysinfos
+                                        ) {
+                                            return;
+                                        }
+
+                                        var nodeIdSuffix =
+                                            node._id.split(
+                                                '//'
+                                            )[1];
+
+                                        var siData =
+                                            sysinfos.find(
+                                                function (
+                                                    s
+                                                ) {
+
+                                                    return (
+                                                        s._id &&
+                                                        s._id.includes(
+                                                            nodeIdSuffix
+                                                        )
+                                                    );
+
+                                                }
+                                            );
+
+                                        if (
+                                            !siData
+                                        ) {
+                                            return;
+                                        }
+
+                                        checkHardware(
+                                            node,
+                                            siData
+                                        );
+
+                                    }
+                                );
+
+                            }
+                        );
+
+                    }
+
+                }
+                catch (ex) {
+
+                    console.log(
+                        'Event Error:',
+                        ex
+                    );
+
+                }
+
+            }
+        );
+
+    };
+
+    // =====================================================
+    // ADMIN PAGE
+    // =====================================================
+
+    obj.handleAdminReq = function(
+        req,
+        res,
+        user
+    ) {
+
+        // ALERT API
+
+        if (
+            req.query.path ===
+            'alerts'
+        ) {
+
+            res.json(alertQueue);
+
+            alertQueue = [];
+
             return;
         }
 
-        var html = `
-            <div style="padding: 20px; font-family: Arial, sans-serif;">
-                <div style="display: flex; justify-content: space-between; align-items: center;">
-                    <h2>Bảng Giám Sát Phần Cứng (Hardware Watch)</h2>
-                    <div>
-                        <button onclick="toggleDebug()" style="padding: 8px 16px; margin-right: 10px; cursor: pointer; background: #6c757d; color: white; border: none; border-radius: 4px;">🕵️ Xem Database Gốc</button>
-                        <button onclick="loadHardwareData()" style="padding: 8px 16px; cursor: pointer; background: #007bff; color: white; border: none; border-radius: 4px;">Làm mới dữ liệu</button>
-                    </div>
-                </div>
-                <hr style="margin-bottom: 20px;" />
-                
-                <!-- Bảng Debug Ẩn -->
-                <textarea id="debug-box" style="display:none; width:100%; height:300px; background:#212529; color:#20c997; margin-bottom:15px; font-family:monospace; padding:10px; border-radius:5px;" readonly></textarea>
+        // HISTORY API
 
-                <div id="hw-result" style="overflow-x: auto;">Đang tải dữ liệu thiết bị...</div>
-            </div>
-            
-            <script>
-            window.rawDebugData = "Không có dữ liệu debug";
+        if (
+            req.query.path ===
+            'history'
+        ) {
 
-            function toggleDebug() {
-                var box = document.getElementById('debug-box');
-                if (box.style.display === 'none') {
-                    box.style.display = 'block';
-                    box.value = "=== DỮ LIỆU GỐC CỦA MÁY TỪ MESH CENTRAL ===\\n(Nếu bảng thiếu dữ liệu, hãy tìm xem CPU/RAM đang nằm ở biến nào trong đống này)\\n\\n" + JSON.stringify(window.rawDebugData, null, 2);
-                } else {
-                    box.style.display = 'none';
-                }
+            res.json(historyDb);
+
+            return;
+        }
+
+        // UPDATE SINGLE BASELINE
+
+        if (
+            req.query.action ===
+            'savebaseline'
+        ) {
+
+            var nodeid =
+                req.query.nodeid;
+
+            if (!nodeid) {
+
+                res.send('NO NODEID');
+
+                return;
             }
 
-            function loadHardwareData() {
-                var resultDiv = document.getElementById('hw-result');
-                resultDiv.innerHTML = '<i>Đang tải thông tin phần cứng...</i>';
-                
-                var url = window.location.href;
-                url += (url.indexOf('?') !== -1 ? '&' : '?') + 'action=getdata';
+            obj.meshServer.db.Get(
+                nodeid,
+                function(err, nodes) {
 
-                fetch(url)
-                    .then(response => response.json())
-                    .then(result => {
-                        if(result.success) {
-                            // Lưu dữ liệu debug
-                            window.rawDebugData = result.debugDocs;
+                    if (
+                        err ||
+                        !nodes ||
+                        nodes.length === 0
+                    ) {
 
-                            if (result.data.length === 0) {
-                                resultDiv.innerHTML = '<p>Không có thiết bị nào trong Database.</p>';
+                        res.send(
+                            'NODE NOT FOUND'
+                        );
+
+                        return;
+                    }
+
+                    var node =
+                        nodes[0];
+
+                    obj.meshServer.db.GetAllType(
+                        'sysinfo',
+                        function(
+                            err,
+                            sysinfos
+                        ) {
+
+                            if (
+                                !sysinfos
+                            ) {
+
+                                res.send(
+                                    'NO SYSINFO'
+                                );
+
                                 return;
                             }
 
-                            var table = '<table border="1" cellpadding="10" style="border-collapse: collapse; width: 100%; text-align: left; background: white;">';
-                            table += '<tr style="background:#e9ecef; color: #333;">';
-                            table += '<th>Tên Máy</th>';
-                            table += '<th>Hệ Điều Hành</th>';
-                            table += '<th>CPU</th>';
-                            table += '<th>RAM</th>';
-                            table += '<th>IP</th>';
-                            table += '<th>Lần Cuối Online</th>';
-                            table += '</tr>';
-                            
-                            result.data.forEach(function(item) {
-                                table += '<tr style="border-bottom: 1px solid #ddd;">';
-                                table += '<td style="color: #0056b3;"><b>' + item.name + '</b></td>';
-                                table += '<td>' + item.os + '</td>';
-                                table += '<td>' + item.cpu + '</td>';
-                                table += '<td><b>' + item.ram + '</b></td>';
-                                table += '<td>' + item.ip + '</td>';
-                                table += '<td>' + item.lastSeen + '</td>';
-                                table += '</tr>';
-                            });
-                            table += '</table>';
-                            
-                            resultDiv.innerHTML = table;
-                        } else {
-                            resultDiv.innerHTML = '<p style="color:red;">Lỗi: ' + result.error + '</p>';
+                            var nodeIdSuffix =
+                                node._id.split(
+                                    '//'
+                                )[1];
+
+                            var siData =
+                                sysinfos.find(
+                                    function(s){
+
+                                        return (
+                                            s._id &&
+                                            s._id.includes(
+                                                nodeIdSuffix
+                                            )
+                                        );
+
+                                    }
+                                );
+
+                            if (
+                                !siData
+                            ) {
+
+                                res.send(
+                                    'NO HARDWARE'
+                                );
+
+                                return;
+                            }
+
+                            var hw =
+                                extractHardware(
+                                    siData
+                                );
+
+                            baselineDb[
+                                nodeid
+                            ] = {
+
+                                fingerprint:
+                                    hashHardware(
+                                        hw
+                                    ),
+
+                                hardware:
+                                    hw,
+
+                                updated:
+                                    new Date()
+
+                            };
+
+                            saveBaseline();
+
+                            res.send('OK');
+
                         }
-                    })
-                    .catch(err => {
-                        resultDiv.innerHTML = '<p style="color:red;">Lỗi kết nối tới Backend của Plugin!</p>';
-                        console.error(err);
-                    });
+                    );
+
+                }
+            );
+
+            return;
+        }
+
+        // UPDATE ALL BASELINE
+
+        if (
+            req.query.action ===
+            'saveallbaseline'
+        ) {
+
+            obj.meshServer.db.GetAllType(
+                'node',
+                function(err, nodes) {
+
+                    obj.meshServer.db.GetAllType(
+                        'sysinfo',
+                        function(err, sysinfos) {
+
+                            if (
+                                !nodes ||
+                                !sysinfos
+                            ) {
+
+                                res.send(
+                                    'NO DATA'
+                                );
+
+                                return;
+                            }
+
+                            var updated = 0;
+
+                            nodes.forEach(function(node){
+
+                                try {
+
+                                    var nodeIdSuffix =
+                                        node._id.split(
+                                            '//'
+                                        )[1];
+
+                                    var siData =
+                                        sysinfos.find(
+                                            function(s){
+
+                                                return (
+                                                    s._id &&
+                                                    s._id.includes(
+                                                        nodeIdSuffix
+                                                    )
+                                                );
+
+                                            }
+                                        );
+
+                                    if (!siData) {
+                                        return;
+                                    }
+
+                                    var hw =
+                                        extractHardware(
+                                            siData
+                                        );
+
+                                    baselineDb[
+                                        node._id
+                                    ] = {
+
+                                        fingerprint:
+                                            hashHardware(
+                                                hw
+                                            ),
+
+                                        hardware:
+                                            hw,
+
+                                        updated:
+                                            new Date()
+
+                                    };
+
+                                    updated++;
+
+                                }
+                                catch(ex) {
+
+                                    console.log(ex);
+
+                                }
+
+                            });
+
+                            saveBaseline();
+
+                            res.send(
+                                'OK: ' + updated
+                            );
+
+                        }
+                    );
+
+                }
+            );
+
+            return;
+        }
+
+        // DASHBOARD
+
+        obj.meshServer.db.GetAllType(
+            'node',
+            function (
+                err,
+                nodes
+            ) {
+
+                obj.meshServer.db.GetAllType(
+                    'sysinfo',
+                    function (
+                        err,
+                        sysinfos
+                    ) {
+
+                        var data = [];
+
+                        if (nodes) {
+
+                            nodes.forEach(
+                                function(node) {
+
+                                    var siData =
+                                        null;
+
+                                    if (
+                                        sysinfos
+                                    ) {
+
+                                        var nodeIdSuffix =
+                                            node._id.split(
+                                                '//'
+                                            )[1];
+
+                                        siData =
+                                            sysinfos.find(
+                                                function(
+                                                    s
+                                                ) {
+
+                                                    return (
+                                                        s._id &&
+                                                        s._id.includes(
+                                                            nodeIdSuffix
+                                                        )
+                                                    );
+
+                                                }
+                                            );
+                                    }
+
+                                    var cpu =
+                                        'N/A';
+
+                                    var ram =
+                                        'N/A';
+
+                                    var disk =
+                                        'N/A';
+
+                                    var changed =
+                                        false;
+
+                                    if (
+                                        siData &&
+                                        siData.hardware
+                                    ) {
+
+                                        var hw =
+                                            siData.hardware;
+
+                                        var osData =
+                                            hw.windows ||
+                                            hw.linux ||
+                                            hw.mac ||
+                                            hw.freebsd ||
+                                            null;
+
+                                        if (
+                                            osData
+                                        ) {
+
+                                            if (
+                                                osData.cpu &&
+                                                Array.isArray(
+                                                    osData.cpu
+                                                ) &&
+                                                osData.cpu[0]
+                                            ) {
+
+                                                cpu =
+                                                    osData.cpu[0].Name ||
+                                                    'Unknown CPU';
+
+                                            }
+
+                                            if (
+                                                osData.memory &&
+                                                Array.isArray(
+                                                    osData.memory
+                                                )
+                                            ) {
+
+                                                var bytes = 0;
+
+                                                osData.memory.forEach(
+                                                    function(m) {
+
+                                                        bytes +=
+                                                            parseInt(
+                                                                m.Capacity || 0
+                                                            );
+
+                                                    }
+                                                );
+
+                                                ram =
+                                                    (
+                                                        bytes /
+                                                        1024 /
+                                                        1024 /
+                                                        1024
+                                                    ).toFixed(0) +
+                                                    ' GB';
+
+                                            }
+
+                                            if (
+                                                osData.drives &&
+                                                Array.isArray(
+                                                    osData.drives
+                                                )
+                                            ) {
+
+                                                disk =
+                                                    osData.drives.map(
+                                                        function(d){
+
+                                                            var sz =
+                                                                (
+                                                                    parseInt(
+                                                                        d.Size || 0
+                                                                    ) /
+                                                                    1024 /
+                                                                    1024 /
+                                                                    1024
+                                                                ).toFixed(0);
+
+                                                            return `
+<div>
+<strong>${d.Model}</strong>
+: ${sz}GB
+</div>
+`;
+
+                                                        }
+                                                    ).join('');
+
+                                            }
+
+                                            try {
+
+                                                if (
+                                                    baselineDb[node._id]
+                                                ) {
+
+                                                    var currentHw =
+                                                        extractHardware(siData);
+
+                                                    var currentHash =
+                                                        hashHardware(currentHw);
+
+                                                    if (
+                                                        baselineDb[node._id]
+                                                            .fingerprint !==
+                                                        currentHash
+                                                    ) {
+
+                                                        changed = true;
+
+                                                    }
+
+                                                }
+
+                                            }
+                                            catch(ex){}
+
+                                        }
+
+                                    }
+
+                                    data.push({
+
+                                        nodeid:
+                                            node._id,
+
+                                        name:
+                                            node.name,
+
+                                        os:
+                                            node.osdesc ||
+                                            'N/A',
+
+                                        ip:
+                                            node.ip ||
+                                            node.host ||
+                                            'N/A',
+
+                                        cpu:
+                                            cpu,
+
+                                        ram:
+                                            ram,
+
+                                        disk:
+                                            disk,
+
+                                        changed:
+                                            changed
+
+                                    });
+
+                                }
+                            );
+
+                        }
+
+                        var rows =
+                            data.map(function(d){
+
+                                return `
+<tr>
+
+<td>${d.name}</td>
+<td>${d.os}</td>
+<td>${d.ip}</td>
+<td>${d.cpu}</td>
+<td>${d.ram}</td>
+<td>${d.disk}</td>
+
+<td>
+
+${d.changed ? `
+
+<button
+onclick="
+updateBaseline(
+'${d.nodeid}'
+)
+"
+style="
+background:#ff9800;
+color:white;
+border:none;
+padding:6px 12px;
+border-radius:6px;
+cursor:pointer;
+font-weight:bold;
+"
+>
+Update Baseline
+</button>
+
+` : ''}
+
+</td>
+
+</tr>
+`;
+
+                            }).join('');
+
+                        res.send(`
+
+<style>
+
+body{
+    margin:0;
+    font-family:Segoe UI;
+    background:#f4f7f6;
+}
+
+.hw-container{
+    padding:20px;
+}
+
+.hw-card{
+    background:white;
+    padding:20px;
+    border-radius:10px;
+    box-shadow:
+        0 4px 6px rgba(
+            0,
+            0,
+            0,
+            0.1
+        );
+}
+
+.hw-table{
+    width:100%;
+    border-collapse:collapse;
+    margin-top:15px;
+}
+
+.hw-table th{
+    background:#007bff;
+    color:white;
+    padding:12px;
+    text-align:left;
+}
+
+.hw-table td{
+    padding:12px;
+    border-bottom:1px solid #eee;
+}
+
+.hw-search{
+    width:100%;
+    padding:10px;
+    margin-bottom:15px;
+}
+
+.popup-overlay{
+    position:fixed;
+    inset:0;
+    background:
+        rgba(0,0,0,.5);
+    display:none;
+    justify-content:center;
+    align-items:center;
+    z-index:99999;
+}
+
+.popup{
+    width:420px;
+    background:white;
+    border-radius:14px;
+    overflow:hidden;
+}
+
+.popup-header{
+    background:#ff4d4f;
+    color:white;
+    padding:16px;
+    font-size:20px;
+    font-weight:bold;
+}
+
+.popup-body{
+    padding:20px;
+}
+
+.popup-footer{
+    padding:16px;
+    text-align:right;
+}
+
+.popup-btn{
+    background:#007bff;
+    color:white;
+    border:none;
+    padding:10px 18px;
+    border-radius:6px;
+    cursor:pointer;
+}
+
+.topbar{
+    display:flex;
+    justify-content:space-between;
+    align-items:center;
+    margin-bottom:15px;
+}
+
+.green-btn{
+    background:#28a745;
+    color:white;
+    border:none;
+    padding:10px 16px;
+    border-radius:6px;
+    cursor:pointer;
+    font-weight:bold;
+}
+
+</style>
+
+<div
+class="popup-overlay"
+id="popupOverlay"
+>
+
+<div class="popup">
+
+<div class="popup-header">
+⚠ Hardware Changed
+</div>
+
+<div class="popup-body">
+
+<div id="popupMachine"></div>
+
+<ul id="popupChanges"></ul>
+
+</div>
+
+<div class="popup-footer">
+
+<button
+class="popup-btn"
+onclick="closePopup()"
+>
+OK
+</button>
+
+</div>
+
+</div>
+
+</div>
+
+<div class="hw-container">
+
+<div class="hw-card">
+
+<div class="topbar">
+
+<h2>
+Hardware Watch Dashboard
+</h2>
+
+<button
+class="green-btn"
+onclick="saveAllBaseline()"
+>
+Update All Baseline
+</button>
+
+</div>
+
+<input
+type="text"
+class="hw-search"
+id="searchInput"
+onkeyup="filterTable()"
+placeholder="🔍 Search..."
+>
+
+<table class="hw-table">
+
+<thead>
+
+<tr>
+
+<th>Machine</th>
+<th>OS</th>
+<th>IP</th>
+<th>CPU</th>
+<th>RAM</th>
+<th>Disk</th>
+<th>Action</th>
+
+</tr>
+
+</thead>
+
+<tbody>
+
+${rows}
+
+</tbody>
+
+</table>
+
+</div>
+
+</div>
+
+<script>
+
+function filterTable() {
+
+var input =
+document
+.getElementById(
+'searchInput'
+)
+.value
+.toUpperCase();
+
+var table =
+document.querySelector(
+'.hw-table'
+);
+
+var tr =
+table.getElementsByTagName(
+'tr'
+);
+
+for (
+var i = 1;
+i < tr.length;
+i++
+) {
+
+var td =
+tr[i]
+.getElementsByTagName(
+'td'
+)[0];
+
+if (td) {
+
+tr[i].style.display =
+td.innerText
+.toUpperCase()
+.indexOf(input) > -1
+? ''
+: 'none';
+
+}
+
+}
+
+}
+
+async function saveAllBaseline() {
+
+if (
+!confirm(
+'Update ALL baseline?'
+)
+) {
+return;
+}
+
+var res =
+await fetch(
+
+window.location.pathname +
+
+'?pin=hardwarewatch' +
+
+'&action=saveallbaseline'
+
+);
+
+alert(await res.text());
+
+location.reload();
+
+}
+
+async function updateBaseline(
+nodeid
+) {
+
+if (
+!confirm(
+'Update baseline for this machine?'
+)
+) {
+return;
+}
+
+try {
+
+var res =
+await fetch(
+
+window.location.pathname +
+
+'?pin=hardwarewatch' +
+
+'&action=savebaseline' +
+
+'&nodeid=' +
+
+encodeURIComponent(
+nodeid
+)
+
+);
+
+var txt =
+await res.text();
+
+alert(txt);
+
+location.reload();
+
+}
+catch(ex) {
+
+alert(ex);
+
+}
+
+}
+
+function showPopup(
+node,
+changes
+) {
+
+document
+.getElementById(
+'popupOverlay'
+)
+.style.display =
+'flex';
+
+document
+.getElementById(
+'popupMachine'
+)
+.innerHTML =
+'<strong>Machine:</strong> '
++ node;
+
+document
+.getElementById(
+'popupChanges'
+)
+.innerHTML =
+changes.map(
+function(c){
+
+return (
+'<li>'
++ c +
+'</li>'
+);
+
+}
+).join('');
+
+}
+
+function closePopup() {
+
+document
+.getElementById(
+'popupOverlay'
+)
+.style.display =
+'none';
+
+}
+
+async function pollAlerts() {
+
+try {
+
+var res =
+await fetch(
+
+window.location.pathname +
+
+'?pin=hardwarewatch' +
+
+'&path=alerts'
+
+);
+
+var alerts =
+await res.json();
+
+if (
+alerts &&
+Array.isArray(
+alerts
+)
+) {
+
+alerts.forEach(
+function(a){
+
+showPopup(
+a.node,
+a.changes
+);
+
+}
+);
+
+}
+
+}
+catch(ex) {
+
+console.log(ex);
+
+}
+
+}
+
+setInterval(
+pollAlerts,
+3000
+);
+
+</script>
+
+`);
+
+                    }
+                );
+
             }
-            
-            // Chạy ngay khi tải xong
-            loadHardwareData();
-            </script>
-        `;
-        
-        res.send(html);
+        );
+
     };
 
     return obj;
+	
+	
+
 };
