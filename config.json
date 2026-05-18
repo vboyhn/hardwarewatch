@@ -4,7 +4,7 @@
     "version": "1.0.0",
     "description": "Tổng hợp và báo cáo thông tin phần cứng máy tính",
     "author": "Tên Của Bạn",
-    "homepage": "https://github.com/username/repo",
+    "homepage": "https://github.com/vboyhn/hardwarewatch",
     "meshCentralCompat": ">=1.0.0",
     "hasAdminPanel": false
 }
