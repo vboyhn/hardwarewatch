@@ -3,11 +3,12 @@
   "shortName": "hardwarewatch",
   "version": "1.0.0",
   "author": "vboyhn",
-  "description": "Dashboard tổng hợp thông tin phần cứng máy tính",
+  "description": "Dashboard tong hop thong tin phan cung may tinh",
   "hasAdminPanel": true,
   "homepage": "https://github.com/vboyhn/hardwarewatch",
+  "changelogUrl": "https://raw.githubusercontent.com/vboyhn/hardwarewatch/main/changelog.md",
   "configUrl": "https://raw.githubusercontent.com/vboyhn/hardwarewatch/main/config.json",
-  "downloadUrl": "https://github.com/vboyhn/hardwarewatch/archive/refs/tags/main.zip",
+  "downloadUrl": "https://github.com/vboyhn/hardwarewatch/archive/main.zip",
   "repository": {
     "type": "git",
     "url": "https://github.com/vboyhn/hardwarewatch.git"
